@@ -1,0 +1,74 @@
+[
+  {
+    "model_version": "base",
+    "hyperparameters": {
+      "budget": 4,
+      "risk_aversion": 0.5,
+      "penalty_lambda": 8.0,
+      "capital_penalty": 0.25,
+      "illiquidity_penalty": 0.25
+    },
+    "best_exact_feasible_bitstring": "00011110",
+    "best_exact_feasible_objective": -128.00038925298003,
+    "workbook_summary": {
+      "workbook_path": "/Users/augustuskaufmann/Desktop/yquantum/investment_dataset_full.xlsx",
+      "assets_sheet": "assets",
+      "scenarios_sheet": "scenarios",
+      "covariance_sheet": "covariance"
+    }
+  },
+  {
+    "model_version": "capital",
+    "hyperparameters": {
+      "budget": 4,
+      "risk_aversion": 0.5,
+      "penalty_lambda": 8.0,
+      "capital_penalty": 0.25,
+      "illiquidity_penalty": 0.25
+    },
+    "best_exact_feasible_bitstring": "11110000",
+    "best_exact_feasible_objective": -127.98474124423478,
+    "workbook_summary": {
+      "workbook_path": "/Users/augustuskaufmann/Desktop/yquantum/investment_dataset_full.xlsx",
+      "assets_sheet": "assets",
+      "scenarios_sheet": "scenarios",
+      "covariance_sheet": "covariance"
+    }
+  },
+  {
+    "model_version": "liquidity",
+    "hyperparameters": {
+      "budget": 4,
+      "risk_aversion": 0.5,
+      "penalty_lambda": 8.0,
+      "capital_penalty": 0.25,
+      "illiquidity_penalty": 0.25
+    },
+    "best_exact_feasible_bitstring": "11001100",
+    "best_exact_feasible_objective": -127.98024803137652,
+    "workbook_summary": {
+      "workbook_path": "/Users/augustuskaufmann/Desktop/yquantum/investment_dataset_full.xlsx",
+      "assets_sheet": "assets",
+      "scenarios_sheet": "scenarios",
+      "covariance_sheet": "covariance"
+    }
+  },
+  {
+    "model_version": "both",
+    "hyperparameters": {
+      "budget": 4,
+      "risk_aversion": 0.5,
+      "penalty_lambda": 8.0,
+      "capital_penalty": 0.25,
+      "illiquidity_penalty": 0.25
+    },
+    "best_exact_feasible_bitstring": "11110000",
+    "best_exact_feasible_objective": -127.91486277201255,
+    "workbook_summary": {
+      "workbook_path": "/Users/augustuskaufmann/Desktop/yquantum/investment_dataset_full.xlsx",
+      "assets_sheet": "assets",
+      "scenarios_sheet": "scenarios",
+      "covariance_sheet": "covariance"
+    }
+  }
+]

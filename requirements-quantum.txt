@@ -1,0 +1,3 @@
+-r requirements.txt
+cirq>=1.4
+bloqade
