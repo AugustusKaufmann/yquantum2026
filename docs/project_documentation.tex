@@ -1,0 +1,1545 @@
+\documentclass[12pt, a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+
+% ── Black and white only ──────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=false,
+    pdfborder={0 0 0},
+}
+
+% ── Code listing style (black and white) ─────────────────────────────────────
+\lstdefinestyle{bwpython}{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\bfseries,
+    commentstyle=\itshape,
+    stringstyle=\ttfamily,
+    numbers=left,
+    numberstyle=\tiny,
+    numbersep=8pt,
+    frame=single,
+    breaklines=true,
+    breakatwhitespace=true,
+    showstringspaces=false,
+    tabsize=4,
+    captionpos=b,
+}
+\lstset{style=bwpython}
+
+% ── Theorem environments ─────────────────────────────────────────────────────
+\newtheorem{definition}{Definition}[section]
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{remark}{Remark}[section]
+\newtheorem{example}{Example}[section]
+
+% ── Header / Footer ──────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small YQuantum 2026 --- Hartford Portfolio QUBO}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\title{
+    \textbf{YQuantum 2026: Hartford Portfolio QUBO} \\[0.5em]
+    \large A Complete Technical Reference \\[0.3em]
+    \large Theory, Implementation, Results, and Lessons Learned
+}
+\author{YQuantum Hackathon Team}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+This document is a self-contained reference for our YQuantum 2026 hackathon project:
+an 8-qubit, insurer-aware portfolio optimization pipeline built for the
+Capgemini $\times$ The Hartford challenge. We cover every piece of theory our
+code depends on, explain every design decision, walk through each source file,
+present our results, and discuss what we tried that did not work and why. The
+intended audience is ourselves and any judge or teammate who wants to understand
+the full depth of the project without reading the source code.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Introduction and Problem Statement}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{The Challenge}
+
+The Hartford is a major U.S.\ insurance company. Insurance companies hold large
+investment portfolios to back their liabilities. The question we are asked to
+solve is:
+
+\begin{quote}
+\textit{Given a universe of assets organized into sectors, which combination of
+sectors should an insurer select to form a portfolio that balances return, risk,
+regulatory capital requirements, and liquidity?}
+\end{quote}
+
+This is a \textbf{combinatorial optimization problem}: we must choose a subset
+of sectors (a discrete decision), and the quality of that choice depends on
+continuous financial quantities like covariance and expected return.
+
+\subsection{Why Quantum?}
+
+Combinatorial optimization over binary variables is a natural fit for quantum
+computing. The problem can be encoded as a QUBO (Quadratic Unconstrained Binary
+Optimization), which maps directly to an Ising Hamiltonian, which is exactly
+what quantum algorithms like QAOA (Quantum Approximate Optimization Algorithm)
+are designed to minimize.
+
+At 8 qubits our problem is small enough that a classical computer can solve it
+exactly in microseconds. The point of this project is not to demonstrate quantum
+advantage. It is to:
+
+\begin{enumerate}
+    \item Build a correct, end-to-end quantum optimization pipeline on real insurance data.
+    \item Analyze how quantum hardware properties (connectivity, noise) affect solution quality.
+    \item Demonstrate the workflow that \textit{would} provide value at scale (16--50+ qubits).
+\end{enumerate}
+
+\subsection{The Data}
+
+The Hartford provides an Excel workbook containing:
+
+\begin{itemize}
+    \item \textbf{Assets sheet}: 50 assets, each with a sector label, expected return, capital charge, and liquidity score.
+    \item \textbf{Scenarios sheet}: 1{,}200 economic scenarios, each giving a return value for every asset.
+    \item \textbf{Covariance sheet}: A $50 \times 50$ asset-level covariance matrix.
+\end{itemize}
+
+The 50 assets belong to 8 natural sectors:
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Cash & Gov Bonds & IG Credit & HY Credit \\
+Equities US & Equities Intl & Real Estate & Infrastructure \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The Decision}
+
+We select exactly $B = 4$ sectors out of 8. Each selected sector receives an
+equal weight of $1/B = 0.25$. This gives us a binary decision vector
+$\mathbf{x} \in \{0,1\}^8$ with the constraint $\sum_i x_i = B$.
+
+The number of feasible portfolios is:
+\[
+\binom{8}{4} = 70
+\]
+
+The total search space (including infeasible) is $2^8 = 256$.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Background Theory: Portfolio Optimization}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Mean--Variance Optimization (Markowitz)}
+
+Modern portfolio theory, introduced by Harry Markowitz in 1952, frames
+portfolio construction as a trade-off between expected return and risk
+(variance).
+
+\begin{definition}[Portfolio Return and Risk]
+Given a weight vector $\mathbf{w} \in \mathbb{R}^n$ over $n$ assets with
+expected return vector $\bm{\mu} \in \mathbb{R}^n$ and covariance matrix
+$\bm{\Sigma} \in \mathbb{R}^{n \times n}$:
+
+\begin{align}
+\text{Expected return:} \quad & R_p = \bm{\mu}^\top \mathbf{w} \\[4pt]
+\text{Portfolio variance:} \quad & \sigma_p^2 = \mathbf{w}^\top \bm{\Sigma}\, \mathbf{w} \\[4pt]
+\text{Portfolio volatility:} \quad & \sigma_p = \sqrt{\mathbf{w}^\top \bm{\Sigma}\, \mathbf{w}}
+\end{align}
+\end{definition}
+
+The classical Markowitz problem is:
+\[
+\min_{\mathbf{w}} \; q \cdot \mathbf{w}^\top \bm{\Sigma}\, \mathbf{w}
+    - \bm{\mu}^\top \mathbf{w}
+\quad \text{subject to} \quad
+\sum_i w_i = 1, \;\; w_i \geq 0
+\]
+
+where $q > 0$ is the \textbf{risk aversion parameter}. A higher $q$ penalizes
+variance more heavily, producing more conservative portfolios.
+
+\begin{remark}
+In our project, the weights are not free continuous variables. Because we use
+equal weighting among selected sectors, the weight vector is fully determined
+by the binary selection vector: $w_i = x_i / B$.
+\end{remark}
+
+\subsection{Why Covariance Matters}
+
+The covariance matrix $\bm{\Sigma}$ captures how asset returns move together.
+Its role in portfolio optimization is crucial:
+
+\begin{itemize}
+    \item \textbf{Diagonal entries} $\Sigma_{ii}$ are individual sector variances.
+    \item \textbf{Off-diagonal entries} $\Sigma_{ij}$ measure co-movement.
+    \item Selecting sectors with \textit{low} or \textit{negative} covariance produces diversification, reducing overall portfolio risk.
+\end{itemize}
+
+The quadratic term $\mathbf{x}^\top \bm{\Sigma}\, \mathbf{x}$ in our objective
+is what makes this problem naturally expressible as a QUBO: it involves pairwise
+interactions between binary variables, exactly the structure a QUBO encodes.
+
+\subsection{Insurance-Specific Metrics}
+
+Beyond return and variance, insurance companies care about:
+
+\begin{description}[leftmargin=2cm]
+    \item[Capital Charge] Regulatory frameworks (e.g., Solvency~II) require insurers
+    to hold capital reserves proportional to investment risk. A high capital charge
+    means the insurer must set aside more capital, reducing the amount available
+    for other uses.
+
+    \item[Liquidity] Insurers must be able to pay claims. Illiquid investments
+    (e.g., real estate, infrastructure) may offer higher returns but cannot be
+    sold quickly in a crisis.
+
+    \item[VaR (Value at Risk)] The loss level that is exceeded with probability
+    $1 - \alpha$. At $\alpha = 0.95$:
+    \[
+    \text{VaR}_{0.95} = \inf\{l : P(\text{Loss} > l) \leq 0.05\}
+    \]
+
+    \item[CVaR (Conditional Value at Risk)] The expected loss given that the loss
+    exceeds VaR. Also called Expected Shortfall:
+    \[
+    \text{CVaR}_\alpha = \mathbb{E}[\text{Loss} \mid \text{Loss} \geq \text{VaR}_\alpha]
+    \]
+    CVaR is generally considered a better risk measure than VaR because it
+    accounts for the severity of tail losses, not just their frequency.
+\end{description}
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Data Pipeline: From Workbook to 8 Sectors}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Why Aggregate?}
+
+The raw workbook has 50 assets but we want 8 qubits (one per sector). We need
+to reduce the dimensionality while preserving as much of the real financial
+structure as possible.
+
+\subsection{The Aggregation Matrix}
+
+Let $R \in \mathbb{R}^{S \times N}$ be the scenario-return matrix ($S = 1200$
+scenarios, $N = 50$ assets). We construct an \textbf{aggregation matrix}
+$A \in \mathbb{R}^{8 \times 50}$ where:
+
+\[
+A_{s,a} = \begin{cases}
+\dfrac{1}{|\mathcal{A}_s|} & \text{if asset } a \text{ belongs to sector } s \\[6pt]
+0 & \text{otherwise}
+\end{cases}
+\]
+
+where $\mathcal{A}_s$ is the set of assets in sector $s$. This gives each
+asset within a sector an equal weight, producing an average sector return.
+
+The sector-level scenario returns are:
+\[
+R_{\text{sec}} = R \cdot A^\top \in \mathbb{R}^{S \times 8}
+\]
+
+From this matrix we compute:
+\begin{align}
+\bm{\mu} &= \frac{1}{S} \sum_{s=1}^{S} (R_{\text{sec}})_s \in \mathbb{R}^8
+    \quad \text{(sector expected returns)} \\[6pt]
+\bm{\Sigma} &= \text{Cov}(R_{\text{sec}}) \in \mathbb{R}^{8 \times 8}
+    \quad \text{(sector covariance matrix)}
+\end{align}
+
+\subsection{Capital and Liquidity Vectors}
+
+For each sector, we average the capital charges and liquidity scores across all
+assets in that sector:
+
+\[
+c_s = \frac{1}{|\mathcal{A}_s|} \sum_{a \in \mathcal{A}_s} \text{capital\_charge}(a)
+\qquad
+\ell_s = \frac{1}{|\mathcal{A}_s|} \sum_{a \in \mathcal{A}_s} \text{liquidity}(a)
+\]
+
+These are then normalized to $[0, 1]$ using min--max normalization:
+\[
+\tilde{c}_s = \frac{c_s - \min(\mathbf{c})}{\max(\mathbf{c}) - \min(\mathbf{c})}
+\qquad
+\tilde{\imath}_s = 1 - \frac{\ell_s - \min(\bm{\ell})}{\max(\bm{\ell}) - \min(\bm{\ell})}
+\]
+
+Note that illiquidity is $1 - \text{normalized liquidity}$, because we want to
+\textit{penalize} illiquid sectors (the higher the illiquidity, the worse).
+
+\subsection{Validation}
+
+We cross-check our aggregated quantities against the workbook's own covariance
+sheet by computing:
+\[
+\text{Frobenius error} = \| \bm{\Sigma}_{\text{scenarios}} - A\, \bm{\Sigma}_{\text{workbook}}\, A^\top \|_F
+\]
+
+In our run this was $\approx 0.040$, confirming that the scenario-based and
+workbook-based covariance estimates are consistent.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{QUBO Formulation}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{What is a QUBO?}
+
+\begin{definition}[QUBO]
+A Quadratic Unconstrained Binary Optimization problem has the form:
+\[
+\min_{\mathbf{x} \in \{0,1\}^n} \; \mathbf{x}^\top Q\, \mathbf{x}
+\]
+where $Q \in \mathbb{R}^{n \times n}$ is an upper-triangular matrix encoding
+both linear terms (on the diagonal) and quadratic interactions (off-diagonal).
+\end{definition}
+
+The key property is that for binary variables, $x_i^2 = x_i$, so the diagonal
+of $Q$ captures linear costs and the off-diagonal captures pairwise interactions.
+
+\subsection{Our Objective Function}
+
+We build four model variants. The full insurer-aware objective (``both'' model) is:
+
+\begin{equation}
+\boxed{
+\min_{\mathbf{x} \in \{0,1\}^8} \;
+\underbrace{\frac{q}{B^2}\, \mathbf{x}^\top \bm{\Sigma}\, \mathbf{x}}_{\text{risk}}
+\;-\; \underbrace{\frac{1}{B}\, \bm{\mu}^\top \mathbf{x}}_{\text{return}}
+\;+\; \underbrace{\lambda\, \bigl(\mathbf{1}^\top \mathbf{x} - B\bigr)^2}_{\text{budget penalty}}
+\;+\; \underbrace{\frac{\gamma}{B}\, \tilde{\mathbf{c}}^\top \mathbf{x}}_{\text{capital}}
+\;+\; \underbrace{\frac{\eta}{B}\, \tilde{\bm{\imath}}^\top \mathbf{x}}_{\text{illiquidity}}
+}
+\label{eq:full_objective}
+\end{equation}
+
+where:
+
+\begin{center}
+\begin{tabular}{clc}
+\toprule
+\textbf{Symbol} & \textbf{Meaning} & \textbf{Default Value} \\
+\midrule
+$\mathbf{x}$ & Binary sector selection vector & --- \\
+$B$ & Number of sectors to select & 4 \\
+$q$ & Risk aversion & 0.5 \\
+$\lambda$ & Budget penalty strength & 8.0 \\
+$\gamma$ & Capital charge penalty & 0.25 \\
+$\eta$ & Illiquidity penalty & 0.25 \\
+$\bm{\mu}$ & Sector expected return vector & from data \\
+$\bm{\Sigma}$ & Sector covariance matrix & from data \\
+$\tilde{\mathbf{c}}$ & Normalized capital charges & from data \\
+$\tilde{\bm{\imath}}$ & Normalized illiquidity scores & from data \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The Four Model Variants}
+
+\begin{center}
+\begin{tabular}{lccl}
+\toprule
+\textbf{Variant} & $\gamma$ & $\eta$ & \textbf{What It Tests} \\
+\midrule
+\texttt{base} & 0 & 0 & Pure Markowitz risk--return \\
+\texttt{capital} & 0.25 & 0 & Adds regulatory capital cost \\
+\texttt{liquidity} & 0 & 0.25 & Adds illiquidity cost \\
+\texttt{both} & 0.25 & 0.25 & Full insurer-aware model \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Running all four lets us show judges exactly how each insurance constraint
+changes the optimal portfolio.
+
+\subsection{Expanding the Budget Penalty}
+
+The budget constraint $\sum_i x_i = B$ is enforced via a quadratic penalty:
+\[
+\lambda\, \bigl(\mathbf{1}^\top \mathbf{x} - B\bigr)^2
+= \lambda \left( \sum_i x_i - B \right)^2
+\]
+
+Expanding this:
+\begin{align}
+\lambda \left(\sum_i x_i - B\right)^2
+&= \lambda \left( \sum_i x_i^2 + 2\sum_{i<j} x_i x_j - 2B\sum_i x_i + B^2 \right) \\
+&= \lambda \left( \sum_i x_i + 2\sum_{i<j} x_i x_j - 2B\sum_i x_i + B^2 \right)
+    \quad \text{(since } x_i^2 = x_i \text{)} \\
+&= \lambda \sum_i (1 - 2B)\, x_i + 2\lambda \sum_{i<j} x_i x_j + \lambda B^2
+\end{align}
+
+The constant $\lambda B^2$ does not affect the optimization and can be dropped.
+
+\subsection{Constructing the QUBO Matrix}
+
+Combining all terms, the upper-triangular QUBO matrix $Q$ has entries:
+
+\textbf{Diagonal entries} ($i = j$):
+\begin{equation}
+Q_{ii} = \frac{q}{B^2}\, \Sigma_{ii}
+         - \frac{1}{B}\, \mu_i
+         + \lambda\,(1 - 2B)
+         + \frac{\gamma}{B}\, \tilde{c}_i
+         + \frac{\eta}{B}\, \tilde{\imath}_i
+\label{eq:qubo_diagonal}
+\end{equation}
+
+\textbf{Off-diagonal entries} ($i < j$):
+\begin{equation}
+Q_{ij} = \frac{2q}{B^2}\, \Sigma_{ij} + 2\lambda
+\label{eq:qubo_offdiag}
+\end{equation}
+
+\begin{remark}
+The factor of 2 on both $\Sigma_{ij}$ and $\lambda$ comes from the fact that
+we store $Q$ as upper-triangular: the contribution of the pair $(i,j)$ appears
+only once in $Q_{ij}$ rather than being split between $Q_{ij}$ and $Q_{ji}$.
+\end{remark}
+
+\subsection{QUBO Scaling}
+
+The entries of $Q$ can span a wide numerical range. Before converting to an
+Ising Hamiltonian, we normalize:
+\[
+Q_{\text{scaled}} = \frac{Q}{\alpha}, \qquad \alpha = \max_{i,j} |Q_{ij}|
+\]
+
+This brings all matrix entries into $[-1, 1]$, which improves the numerical
+conditioning of the QAOA simulation. The unscaled $Q$ is kept for computing
+physically meaningful portfolio objectives.
+
+\subsection{Why $\lambda = 8.0$?}
+
+The penalty $\lambda$ must be large enough that any infeasible bitstring
+(one that does not select exactly $B$ sectors) has a higher objective than
+the best feasible bitstring. If $\lambda$ is too small, the QUBO global
+minimum might be an infeasible solution.
+
+Our code automatically verifies this: after constructing the QUBO, it checks
+whether the brute-force global optimum is feasible. If not, it doubles $\lambda$
+and re-checks, repeating up to 6 times. With $\lambda = 8.0$, all four model
+variants have feasible global optima without needing adjustment.
+
+\begin{remark}
+The penalty approach converts a \textit{constrained} problem into an
+\textit{unconstrained} one. This is necessary because QUBO and Ising
+formulations do not natively support hard constraints. The trade-off is that
+very large $\lambda$ values can distort the energy landscape, making the
+penalty-related quadratic terms dominate over the actual portfolio quality terms.
+\end{remark}
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Ising Hamiltonian}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Why Convert to Ising?}
+
+Quantum algorithms like QAOA work with quantum mechanical Hamiltonians, not
+QUBO matrices. The standard bridge is the Ising model:
+
+\begin{definition}[Ising Hamiltonian]
+The classical Ising Hamiltonian for $n$ spins is:
+\[
+H_C = \sum_{i=1}^{n} h_i\, Z_i + \sum_{i < j} J_{ij}\, Z_i\, Z_j
+\]
+where $Z_i \in \{+1, -1\}$ are spin variables (eigenvalues of the Pauli-$Z$ operator),
+$h_i$ are local fields, and $J_{ij}$ are coupling strengths.
+\end{definition}
+
+\subsection{The Mapping: Binary to Spin}
+
+The standard substitution is:
+\begin{equation}
+x_i = \frac{1 - s_i}{2}
+\label{eq:bit_to_spin}
+\end{equation}
+
+where $s_i \in \{+1, -1\}$ and $x_i \in \{0, 1\}$. This gives:
+\begin{align}
+x_i = 0 &\;\longleftrightarrow\; s_i = +1 \\
+x_i = 1 &\;\longleftrightarrow\; s_i = -1
+\end{align}
+
+\begin{remark}
+This is the \textit{opposite} of the common physics convention where
+$s_i = +1$ means ``spin up'' (selected). Our convention comes from the
+standard QUBO-to-Ising literature and is used consistently throughout the
+code. If a judge asks, we can explain this: it does not affect correctness
+as long as the mapping is applied uniformly.
+\end{remark}
+
+\subsection{Deriving the Ising Coefficients}
+
+Substituting $x_i = (1 - s_i)/2$ into $\mathbf{x}^\top Q\,\mathbf{x}$:
+
+\textbf{Diagonal terms} ($Q_{ii} x_i^2 = Q_{ii} x_i$):
+\[
+Q_{ii}\, x_i = Q_{ii}\, \frac{1 - s_i}{2} = \frac{Q_{ii}}{2} - \frac{Q_{ii}}{2}\, s_i
+\]
+
+This contributes $Q_{ii}/2$ to the constant offset and $-Q_{ii}/2$ to $h_i$.
+
+\textbf{Off-diagonal terms} ($Q_{ij} x_i x_j$ for $i < j$):
+\begin{align}
+Q_{ij}\, x_i\, x_j
+&= Q_{ij}\, \frac{1 - s_i}{2}\, \frac{1 - s_j}{2} \\
+&= \frac{Q_{ij}}{4}\, (1 - s_i - s_j + s_i s_j)
+\end{align}
+
+This contributes:
+\begin{itemize}
+    \item $Q_{ij}/4$ to the constant offset
+    \item $-Q_{ij}/4$ to $h_i$
+    \item $-Q_{ij}/4$ to $h_j$
+    \item $+Q_{ij}/4$ to $J_{ij}$
+\end{itemize}
+
+\textbf{Summary of the Ising coefficients:}
+\begin{align}
+h_i &= -\frac{Q_{ii}}{2} - \sum_{j \neq i} \frac{Q_{\min(i,j),\max(i,j)}}{4}
+\label{eq:ising_h} \\[6pt]
+J_{ij} &= \frac{Q_{ij}}{4} \quad \text{for } i < j
+\label{eq:ising_J} \\[6pt]
+\text{offset} &= \sum_i \frac{Q_{ii}}{2} + \sum_{i<j} \frac{Q_{ij}}{4}
+\label{eq:ising_offset}
+\end{align}
+
+The offset is a constant that shifts the entire energy spectrum. It does not
+affect which bitstring is optimal, but we track it for accurate energy
+comparisons.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Classical Baselines}
+% ══════════════════════════════════════════════════════════════════════════════
+
+We use three classical methods to validate our quantum results. These are not
+competitors---they are ground truth.
+
+\subsection{Exact Brute-Force Enumeration}
+
+With $n = 8$ qubits, the total search space is $2^8 = 256$ bitstrings. We
+evaluate the QUBO objective for every single one:
+
+\[
+\text{For each } \mathbf{x} \in \{0,1\}^8: \quad
+f(\mathbf{x}) = \mathbf{x}^\top Q\, \mathbf{x}
+\]
+
+We then find:
+\begin{itemize}
+    \item The \textbf{best overall} bitstring (lowest $f$, may be infeasible).
+    \item The \textbf{best feasible} bitstring (lowest $f$ among those with $\sum x_i = B$).
+\end{itemize}
+
+If the best overall is also feasible, our $\lambda$ is large enough. If not,
+we double $\lambda$ and repeat.
+
+This is computationally trivial at $n = 8$ but would become impossible at
+$n \geq 30$ ($2^{30} \approx 10^9$ evaluations). That is where quantum
+methods would become valuable.
+
+\subsection{Greedy Selection}
+
+The greedy baseline adds one sector at a time, always picking the sector that
+most reduces the QUBO objective:
+
+\begin{algorithm}[H]
+\caption{Greedy Sector Selection}
+\begin{algorithmic}[1]
+\State $\mathbf{x} \gets \mathbf{0}$, $\text{selected} \gets \emptyset$
+\For{$k = 1$ to $B$}
+    \State $i^* \gets \arg\min_{i \notin \text{selected}} f(\mathbf{x} + \mathbf{e}_i)$
+    \State $x_{i^*} \gets 1$, $\text{selected} \gets \text{selected} \cup \{i^*\}$
+\EndFor
+\State \Return $\mathbf{x}$
+\end{algorithmic}
+\end{algorithm}
+
+In all four model variants, greedy finds the exact optimum. This is not
+guaranteed in general---greedy can get trapped in local optima---but it happens
+to work here because the 8-sector problem has relatively smooth structure.
+
+\subsection{Continuous Markowitz Baseline}
+
+We also solve the \textit{continuous relaxation}: instead of binary $x_i$,
+we allow real-valued weights $w_i \geq 0$ with $\sum w_i = 1$.
+
+The continuous problem is:
+\[
+\min_{\mathbf{w} \in \Delta} \; q\, \mathbf{w}^\top \bm{\Sigma}\, \mathbf{w}
+    - \bm{\mu}^\top \mathbf{w}
+\]
+
+where $\Delta = \{\mathbf{w} : w_i \geq 0, \sum w_i = 1\}$ is the probability simplex.
+
+We solve this with projected gradient descent:
+
+\begin{algorithm}[H]
+\caption{Continuous Markowitz via Projected Gradient Descent}
+\begin{algorithmic}[1]
+\State $\mathbf{w} \gets (1/8, \ldots, 1/8)$
+\For{$t = 1$ to $T$}
+    \State $\mathbf{g} \gets 2q\, \bm{\Sigma}\, \mathbf{w} - \bm{\mu}$
+    \State $\eta_t \gets \eta_0 / \sqrt{t}$ \Comment{Decaying learning rate}
+    \State $\mathbf{w} \gets \text{proj}_\Delta(\mathbf{w} - \eta_t\, \mathbf{g})$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+The simplex projection uses the algorithm of Duchi et al.\ (2008): sort the
+components, find a threshold, and clip.
+
+After convergence, we round to a discrete portfolio by selecting the top-$B$
+sectors by weight. This ``continuous proxy'' is then evaluated with the full
+QUBO objective for comparison.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{QAOA: Quantum Approximate Optimization Algorithm}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{The Idea}
+
+QAOA, introduced by Farhi, Goldstone, and Gutmann (2014), is a variational
+quantum algorithm designed for combinatorial optimization. It constructs a
+parameterized quantum state whose measurement outcomes are biased toward
+low-energy (good) solutions of the cost Hamiltonian.
+
+\subsection{The QAOA Circuit}
+
+For depth $p$, QAOA alternates between two operations:
+
+\begin{enumerate}
+    \item \textbf{Cost layer}: Apply $e^{-i \gamma_k H_C}$ where $H_C$ is the Ising cost Hamiltonian.
+    \item \textbf{Mixer layer}: Apply $e^{-i \beta_k H_M}$ where $H_M = \sum_i X_i$ is the transverse-field mixer.
+\end{enumerate}
+
+The full QAOA state is:
+\begin{equation}
+\boxed{
+|\bm{\gamma}, \bm{\beta}\rangle
+= \prod_{k=1}^{p} e^{-i \beta_k H_M}\, e^{-i \gamma_k H_C}\, |+\rangle^{\otimes n}
+}
+\label{eq:qaoa_state}
+\end{equation}
+
+where $|+\rangle = \frac{1}{\sqrt{2}}(|0\rangle + |1\rangle)$ and the initial
+state $|+\rangle^{\otimes n}$ is a uniform superposition over all $2^n$
+computational basis states.
+
+\subsection{The Cost Layer in Detail}
+
+Since $H_C$ is diagonal in the computational basis, $e^{-i \gamma H_C}$
+applies a phase to each basis state proportional to its energy:
+
+\[
+e^{-i \gamma H_C} |z\rangle = e^{-i \gamma E(z)} |z\rangle
+\]
+
+where $E(z)$ is the Ising energy of bitstring $z$. In our implementation, we
+precompute all 256 energies and apply the phases as element-wise multiplication
+on the state vector.
+
+\subsection{The Mixer Layer in Detail}
+
+The mixer Hamiltonian $H_M = \sum_i X_i$ generates rotations around the
+$X$-axis on each qubit independently:
+
+\[
+e^{-i \beta H_M} = \bigotimes_{i=1}^{n} R_X(2\beta)
+\]
+
+where $R_X(\theta) = e^{-i \theta X / 2}$. In matrix form:
+
+\[
+R_X(\theta) = \begin{pmatrix}
+\cos(\theta/2) & -i\sin(\theta/2) \\
+-i\sin(\theta/2) & \cos(\theta/2)
+\end{pmatrix}
+\]
+
+Our code applies this qubit-by-qubit on the state vector using stride-based
+indexing, without ever building the full $256 \times 256$ matrix.
+
+\subsection{Variational Optimization}
+
+The $2p$ parameters $(\gamma_1, \ldots, \gamma_p, \beta_1, \ldots, \beta_p)$
+are optimized classically to minimize the expected cost:
+
+\[
+C(\bm{\gamma}, \bm{\beta})
+= \langle \bm{\gamma}, \bm{\beta} | H_C | \bm{\gamma}, \bm{\beta} \rangle
+= \sum_{z} |\langle z | \bm{\gamma}, \bm{\beta} \rangle|^2 \cdot E(z)
+\]
+
+Our optimizer uses \textbf{multi-start coordinate descent}:
+
+\begin{enumerate}
+    \item \textbf{Global exploration}: Sample 12 random starting points.
+    For each, evaluate the expected energy. Keep the best.
+    \item \textbf{Local refinement}: Starting from the best random point,
+    perturb each parameter in both directions by a step size $\delta$. If any
+    perturbation improves the energy, accept it. After each full pass, halve
+    the step size. Repeat for up to 5 rounds or until no improvement is found.
+\end{enumerate}
+
+\begin{remark}
+This optimizer is simple and dependency-free, which was a deliberate choice
+for hackathon robustness. A stronger optimizer (e.g., COBYLA or Nelder--Mead
+from SciPy) would likely find slightly better angles, but at 8 qubits the
+improvement would be marginal and would not change our conclusions.
+\end{remark}
+
+\subsection{Why QAOA Depths $p = 1, 2, 3$?}
+
+\begin{itemize}
+    \item $p = 1$: The shallowest meaningful QAOA. Has $2$ parameters. Produces
+    a smooth energy landscape that is easy to visualize and optimize, but has
+    limited expressivity.
+    \item $p = 2$: Four parameters. Can capture more complex correlations
+    between the cost and mixer layers.
+    \item $p = 3$: Six parameters. Deeper circuits can in principle better
+    approximate the ground state, but optimization becomes harder and hardware
+    noise accumulates.
+\end{itemize}
+
+In the limit $p \to \infty$, QAOA can find the exact ground state (by the
+quantum adiabatic theorem), but practical quantum hardware limits $p$ to
+single digits.
+
+\subsection{Measurement and Sampling}
+
+After preparing the QAOA state, we obtain a probability distribution over all
+$2^n$ basis states. To simulate a real quantum device, we draw $2{,}048$
+samples (``shots'') from this distribution and count occurrences of each
+bitstring.
+
+Key metrics from the output distribution:
+
+\begin{align}
+P(\text{optimal}) &= |\langle z^* | \bm{\gamma}, \bm{\beta}\rangle|^2 \\
+P(\text{feasible}) &= \sum_{z : |z| = B} |\langle z | \bm{\gamma}, \bm{\beta}\rangle|^2 \\
+P(\text{optimal} \mid \text{feasible}) &= \frac{P(\text{optimal})}{P(\text{feasible})}
+\end{align}
+
+where $z^*$ is the known classical optimum and $|z| = \sum_i z_i$.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Circuit Construction for Neutral-Atom Hardware}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{From Ising to Gates}
+
+The cost layer requires implementing $e^{-i \gamma H_C}$. Since:
+\[
+H_C = \sum_i h_i Z_i + \sum_{i<j} J_{ij} Z_i Z_j
+\]
+
+the exponential factorizes (all terms commute because they are all diagonal):
+
+\[
+e^{-i \gamma H_C} = \prod_i e^{-i \gamma h_i Z_i}
+                     \prod_{i<j} e^{-i \gamma J_{ij} Z_i Z_j}
+\]
+
+\textbf{Single-qubit terms}: $e^{-i \gamma h_i Z_i} = R_Z(2\gamma h_i)$.
+
+\textbf{Two-qubit terms}: $e^{-i \gamma J_{ij} Z_i Z_j}$ requires the
+decomposition:
+
+\begin{equation}
+e^{-i \theta Z_i Z_j} = \text{CNOT}(i,j) \;\cdot\; R_Z(2\theta)_j \;\cdot\; \text{CNOT}(i,j)
+\label{eq:zz_decomp}
+\end{equation}
+
+\begin{remark}
+An earlier version of the code used an H/CZ/RZ/CZ/H decomposition, which does
+\textbf{not} implement $e^{-i\theta ZZ}$ correctly. This was a real bug that
+caused a mismatch between the NumPy simulator and the Cirq circuit path. The
+fix was to switch to the CNOT/RZ/CNOT decomposition shown above, which is the
+standard correct form. This is documented in the code comments.
+\end{remark}
+
+\subsection{Gate Scheduling and Connectivity}
+
+On a real neutral-atom device (like QuEra's Bloqade), not all qubit pairs can
+interact simultaneously. The circuit depth depends on how we schedule the
+two-qubit gates.
+
+We test four \textbf{connectivity modes}:
+
+\begin{description}[leftmargin=2.5cm]
+    \item[naive] Each ZZ interaction is applied sequentially, one at a time.
+    For $K_8$ (complete graph on 8 vertices, 28 edges), this gives 28 sequential
+    groups, each containing 3 gate layers (CNOT--RZ--CNOT), yielding the deepest
+    circuit.
+
+    \item[hand] Use a greedy edge coloring algorithm to partition the 28 edges
+    into disjoint matchings. Each matching can be executed in parallel. For $K_8$,
+    the chromatic index is 7, so we get 7 groups instead of 28. This drastically
+    reduces circuit depth.
+
+    \item[auto] Use Bloqade's built-in parallelization pass (when installed) to
+    automatically optimize the circuit layout. Falls back to \texttt{hand} if
+    Bloqade is not available.
+
+    \item[pruned] Only keep the 12 strongest (by $|J_{ij}|$) coupling edges. This
+    reduces the two-qubit gate count at the cost of losing weaker interactions.
+\end{description}
+
+\subsection{Edge Coloring}
+
+\begin{definition}[Edge Coloring]
+An edge coloring of a graph $G$ assigns colors to edges such that no two edges
+sharing a vertex have the same color. The minimum number of colors needed is
+the \textbf{chromatic index} $\chi'(G)$.
+\end{definition}
+
+For a complete graph $K_n$ with $n$ even: $\chi'(K_n) = n - 1$. So $K_8$ needs
+7 colors, meaning 7 parallel groups of 4 simultaneous ZZ gates each.
+
+Our implementation uses a greedy algorithm: for each edge, try to assign it to
+an existing color class (checking that no vertex conflicts exist). If no class
+works, create a new one.
+
+\subsection{Circuit Depth Comparison}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Mode} & \textbf{ZZ Groups} & \textbf{Gates per layer} & \textbf{Relative Depth} \\
+\midrule
+\texttt{naive} & 28 & $28 \times 3 = 84$ & Deepest \\
+\texttt{hand} / \texttt{auto} & 7 & $7 \times 3 = 21$ & $4\times$ reduction \\
+\texttt{pruned} & $\leq 7$ & $\leq 21$ & Shallowest \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The Atom Layout Figure}
+
+To give a neutral-atom-specific perspective, we compute a 2D layout of the 8
+sectors using classical Multidimensional Scaling (MDS) on the correlation
+distance matrix:
+
+\[
+D_{ij} = 1 - |\rho_{ij}|
+\]
+
+where $\rho_{ij} = \Sigma_{ij} / (\sigma_i \sigma_j)$ is the Pearson
+correlation between sectors $i$ and $j$. Sectors with high correlation are
+placed close together, mimicking how atoms would be arranged to minimize
+long-range interactions.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Noise Models}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Why Study Noise?}
+
+Real quantum devices are noisy. Gates have finite fidelity, qubits decohere,
+and measurement is imperfect. Understanding how noise degrades our results is
+essential for assessing whether this workflow would work on real hardware.
+
+\subsection{Our Approximate Noise Model}
+
+When Bloqade's hardware-calibrated noise transforms are not available, we use
+a simplified model that mixes the ideal probability distribution with the
+uniform distribution:
+
+\begin{equation}
+\mathbf{p}_{\text{noisy}} = (1 - \epsilon)\, \mathbf{p}_{\text{ideal}}
+    + \epsilon\, \mathbf{u}
+\label{eq:noise_mixing}
+\end{equation}
+
+where $\mathbf{u} = (1/2^n, \ldots, 1/2^n)$ is the uniform distribution and
+the effective noise strength is:
+
+\[
+\epsilon = \min\bigl(0.95,\; \alpha_{\text{model}} \cdot s
+    \cdot (0.0015 \cdot d + 0.002 \cdot g)\bigr)
+\]
+
+with $d$ = circuit depth, $g$ = two-qubit gate count, $s$ = user-specified noise
+strength, and $\alpha_{\text{model}}$ a per-model scale factor.
+
+\subsection{Noise Model Variants}
+
+\begin{center}
+\begin{tabular}{lcp{7cm}}
+\toprule
+\textbf{Model} & $\alpha$ & \textbf{Physical Motivation} \\
+\midrule
+\texttt{none} & 0.0 & Ideal noiseless simulation \\
+\texttt{one\_zone} & 1.0 & Single atom-loss zone (dominant neutral-atom error) \\
+\texttt{two\_zone} & 0.75 & Two independent loss zones (partially correlated) \\
+\texttt{depolarizing} & 1.25 & Single-qubit depolarizing channel (worst case) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}
+We are transparent that these noise models are \textbf{not} hardware-calibrated.
+They all use the same mixing formula with different scale factors. The purpose
+is to demonstrate the \textit{type} of analysis (how does solution quality
+degrade with noise?) rather than to predict exact hardware performance. When
+Bloqade is installed, the code automatically upgrades to use Bloqade's native
+\texttt{GeminiOneZoneNoiseModel} and \texttt{GeminiTwoZoneNoiseModel}.
+\end{remark}
+
+\subsection{Readout Error}
+
+Independent of the noise model, we also simulate measurement errors. Each qubit
+has a probability $p_{\text{ro}}$ of being flipped during readout:
+
+\[
+P(\text{measure } z' \mid \text{true state } z) = \prod_{i=1}^n
+\begin{cases}
+1 - p_{\text{ro}} & \text{if } z'_i = z_i \\
+p_{\text{ro}} & \text{if } z'_i \neq z_i
+\end{cases}
+\]
+
+This is applied to the full probability vector:
+\[
+p_{\text{measured}}(z') = \sum_{z} p_{\text{true}}(z) \cdot (1 - p_{\text{ro}})^{n - d_H(z, z')} \cdot p_{\text{ro}}^{d_H(z, z')}
+\]
+
+where $d_H(z, z')$ is the Hamming distance between $z$ and $z'$.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Results}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Classical Optima}
+
+The exact brute-force search on the real Hartford workbook produces:
+
+\begin{center}
+\begin{tabular}{llp{6cm}}
+\toprule
+\textbf{Model} & \textbf{Bitstring} & \textbf{Selected Sectors} \\
+\midrule
+\texttt{base} & \texttt{00011110} & HY Credit, Equities US, Equities Intl, Real Estate \\
+\texttt{capital} & \texttt{11110000} & Cash, Gov Bonds, IG Credit, HY Credit \\
+\texttt{liquidity} & \texttt{11001100} & Cash, Gov Bonds, Equities US, Equities Intl \\
+\texttt{both} & \texttt{11110000} & Cash, Gov Bonds, IG Credit, HY Credit \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Business interpretation:}
+\begin{itemize}
+    \item \texttt{base} selects high-return sectors (equities, HY credit, real estate), accepting higher risk and capital cost.
+    \item \texttt{capital} rotates entirely into low-capital-charge fixed income, sacrificing return for regulatory efficiency.
+    \item \texttt{liquidity} keeps some equity exposure but drops illiquid sectors (real estate, infrastructure).
+    \item \texttt{both} matches \texttt{capital}, indicating that at these penalty levels ($\gamma = \eta = 0.25$), the capital constraint dominates the liquidity constraint.
+\end{itemize}
+
+\subsection{Quantum Results}
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Metric} & \textbf{Base} & \textbf{Capital} & \textbf{Liquidity} & \textbf{Both} \\
+\midrule
+Quantum bitstring matches exact? & Yes & Yes & Yes & Yes \\
+$P(\text{optimal})$ & 1.03\% & 1.03\% & 1.03\% & 1.03\% \\
+$P(\text{feasible})$ & 71.96\% & 71.96\% & 71.96\% & 71.96\% \\
+$P(\text{optimal} \mid \text{feasible})$ & 1.43\% & 1.43\% & 1.43\% & 1.43\% \\
+Uniform baseline $1/\binom{8}{4}$ & 1.43\% & 1.43\% & 1.43\% & 1.43\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Interpreting the Quantum Performance}
+
+The probability $P(\text{optimal} \mid \text{feasible}) \approx 1/70$ means
+QAOA is essentially \textbf{uniform over the feasible set}. It learns the budget
+constraint ($\sum x_i = 4$) but does not distinguish between the 70 feasible
+portfolios.
+
+\textbf{Why?} The energy landscape figure shows the answer: the gap between the
+best and second-best feasible bitstring is only $0.000031$ in the scaled QUBO.
+With such a tiny gap, even an ideal QAOA at shallow depth cannot concentrate
+significant probability mass on the optimum.
+
+This is \textit{not} a failure of our implementation. It is a fundamental
+property of this particular problem instance at this scale. The practical
+implication is that at 8 qubits, brute-force enumeration is both faster and
+more reliable.
+
+\subsection{Connectivity Results}
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mode} & \textbf{Avg.\ Circuit Depth} & \textbf{Avg.\ $P(\text{opt})$} \\
+\midrule
+\texttt{naive} & $\sim170$ & $\sim0.009$ \\
+\texttt{auto} & $\sim60$ & $\sim0.009$ \\
+\texttt{hand} & $\sim60$ & $\sim0.009$ \\
+\texttt{pruned} & $\sim45$ & $\sim0.004$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Key observations:
+\begin{itemize}
+    \item \texttt{hand} and \texttt{auto} achieve the same quality as \texttt{naive} at $\sim3\times$ less depth. This is pure scheduling gain.
+    \item \texttt{pruned} halves the gate count but loses solution quality because the discarded weak couplings still carry relevant information.
+    \item At noiseless simulation, depth does not hurt (no decoherence). On real hardware, the depth reduction would translate directly to improved fidelity.
+\end{itemize}
+
+\subsection{Noise Results}
+
+Under increasing noise strength:
+\begin{itemize}
+    \item All noise models degrade $P(\text{optimal})$ monotonically.
+    \item \texttt{depolarizing} ($\alpha = 1.25$) degrades fastest.
+    \item \texttt{two\_zone} ($\alpha = 0.75$) degrades slowest.
+    \item At noise strength 2.0, the optimal probability drops by $\sim30$--$40\%$ from the noiseless value.
+\end{itemize}
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Code Architecture}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{File Overview}
+
+\begin{center}
+\begin{longtable}{lcp{7cm}}
+\toprule
+\textbf{File} & \textbf{Lines} & \textbf{Purpose} \\
+\midrule
+\endhead
+\texttt{run\_demo.py} & 344 & CLI entrypoint. Orchestrates the entire pipeline: load data, build models, run experiments, generate figures. \\
+\texttt{project\_config.py} & 207 & All hyperparameters and configuration in one place. Uses Python dataclasses. \\
+\texttt{portfolio\_model.py} & 709 & Data loading (Excel and synthetic), sector aggregation, QUBO construction, Ising conversion. \\
+\texttt{classical\_baselines.py} & 205 & Brute-force enumeration, greedy selection, continuous Markowitz, auto-penalty adjustment. \\
+\texttt{qaoa\_simulator.py} & 224 & Pure-NumPy exact QAOA simulator for 8 qubits. No external quantum library needed. \\
+\texttt{bloqade\_experiments.py} & 625 & Circuit construction, connectivity scheduling, noise modeling, full experiment loop. \\
+\texttt{results\_metrics.py} & 179 & Per-bitstring evaluation (return, risk, VaR, CVaR) and distribution summaries. \\
+\texttt{make\_figures.py} & 732 & All 10 presentation figures and CSV/JSON export utilities. \\
+\midrule
+\textbf{Total} & \textbf{3{,}225} & \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{Detailed File Explanations}
+
+\subsubsection{\texttt{project\_config.py} --- Configuration}
+
+This file defines four dataclass objects:
+
+\begin{itemize}
+    \item \texttt{ModelHyperparameters}: The 5 parameters that define a single QUBO model ($B$, $q$, $\lambda$, $\gamma$, $\eta$).
+    \item \texttt{SweepConfig}: Ranges for hyperparameter sweeps when running the full grid.
+    \item \texttt{ExecutionConfig}: Runtime settings (shots, optimizer restarts, which model versions and noise models to include).
+    \item \texttt{RunConfig}: Top-level config combining all the above plus file paths.
+\end{itemize}
+
+It also defines \texttt{CANONICAL\_SECTORS} (the fixed 8-sector ordering that maps sectors to qubit indices), \texttt{SECTOR\_ALIASES} (fuzzy matching for workbook labels), and \texttt{COLUMN\_ALIASES} (fuzzy matching for column headers).
+
+\subsubsection{\texttt{portfolio\_model.py} --- Data and QUBO}
+
+\textbf{Data loading} (\texttt{load\_workbook\_dataset}):
+\begin{itemize}
+    \item Opens the Excel file with \texttt{openpyxl}.
+    \item Auto-detects sheet names by keyword matching (``asset'', ``scenario'', ``cov'').
+    \item Fuzzy-matches column headers to canonical names.
+    \item Fuzzy-matches sector labels to the 8 canonical sectors.
+    \item Falls back to synthetic data if the workbook is missing.
+\end{itemize}
+
+\textbf{Sector aggregation} (\texttt{aggregate\_to\_sectors}):
+\begin{itemize}
+    \item Builds the $8 \times 50$ aggregation matrix $A$.
+    \item Computes $R_{\text{sec}} = R \cdot A^\top$.
+    \item Derives $\bm{\mu}$, $\bm{\Sigma}$, capital, and liquidity vectors.
+    \item Min--max normalizes capital and illiquidity.
+\end{itemize}
+
+\textbf{QUBO construction} (\texttt{build\_qubo\_model}):
+\begin{itemize}
+    \item Builds $Q$ using Equations~\ref{eq:qubo_diagonal} and~\ref{eq:qubo_offdiag}.
+    \item Scales $Q$ by $\alpha = \max|Q_{ij}|$.
+    \item Calls \texttt{qubo\_to\_ising} to derive $h$, $J$, and offset using Equations~\ref{eq:ising_h}--\ref{eq:ising_offset}.
+\end{itemize}
+
+\textbf{Ising conversion} (\texttt{qubo\_to\_ising}):
+Implements the exact derivation from Section~5.3. Returns the field vector $\mathbf{h}$, coupling matrix $J$, and constant offset.
+
+\subsubsection{\texttt{qaoa\_simulator.py} --- NumPy QAOA}
+
+This is a self-contained, exact state-vector simulator:
+
+\begin{itemize}
+    \item \texttt{basis\_bit\_table}: Precomputes the $256 \times 8$ table mapping state indices to bit patterns.
+    \item \texttt{precompute\_ising\_energies}: Evaluates $E(z)$ for all 256 basis states. This only needs to be done once per QUBO model.
+    \item \texttt{simulate\_qaoa\_state}: The core simulation loop. Starts from $|+\rangle^{\otimes 8}$, alternates cost phases and mixer rotations.
+    \item \texttt{apply\_rx\_layer}: Applies $R_X(2\beta)$ to each qubit using stride-based indexing on the state vector, avoiding the $256 \times 256$ matrix.
+    \item \texttt{optimize\_qaoa\_angles}: Multi-start coordinate descent over the $2p$ parameters.
+\end{itemize}
+
+\subsubsection{\texttt{classical\_baselines.py} --- Ground Truth}
+
+\begin{itemize}
+    \item \texttt{exact\_bruteforce\_search}: Evaluates all 256 bitstrings.
+    \item \texttt{greedy\_selection\_baseline}: Greedy sector-by-sector selection.
+    \item \texttt{continuous\_markowitz\_baseline}: Projected gradient descent on continuous weights.
+    \item \texttt{ensure\_feasible\_penalty}: Auto-doubles $\lambda$ until the QUBO global minimum is feasible.
+\end{itemize}
+
+\subsubsection{\texttt{bloqade\_experiments.py} --- Quantum Experiments}
+
+This file manages the full experiment sweep:
+
+\begin{itemize}
+    \item For each (depth, seed, connectivity mode, noise model, noise strength, readout error) configuration:
+    \begin{enumerate}
+        \item Optimize QAOA angles (or reuse from same depth/seed).
+        \item Build a Cirq circuit if Cirq is installed.
+        \item Simulate the circuit (Cirq ideal or NumPy fallback).
+        \item Apply noise (Bloqade native or approximate fallback).
+        \item Sample bitstrings and evaluate portfolio metrics.
+        \item Record summary statistics.
+    \end{enumerate}
+\end{itemize}
+
+Key functions:
+\begin{itemize}
+    \item \texttt{interaction\_edges\_from\_ising}: Extracts weighted edges from $J$.
+    \item \texttt{greedy\_edge\_coloring}: Partitions edges into parallel groups.
+    \item \texttt{build\_cirq\_qaoa\_circuit}: Constructs the Cirq circuit with the CNOT/RZ/CNOT decomposition.
+    \item \texttt{approximate\_noisy\_probabilities}: The mixing noise model.
+    \item \texttt{simulate\_with\_noise\_if\_available}: Tries Bloqade noise first, falls back to approximate.
+\end{itemize}
+
+\subsubsection{\texttt{results\_metrics.py} --- Evaluation}
+
+\begin{itemize}
+    \item \texttt{evaluate\_selection}: Given a bitstring, computes all financial and QUBO metrics (return, variance, volatility, VaR, CVaR, capital, liquidity, QUBO objective).
+    \item \texttt{summarize\_probability\_distribution}: Given a full QAOA probability vector, computes $P(\text{optimal})$, $P(\text{feasible})$, and expected objective.
+    \item \texttt{sample\_counts\_from\_probabilities}: Simulates measurement shots by drawing from the probability distribution.
+\end{itemize}
+
+\subsubsection{\texttt{make\_figures.py} --- Visualization}
+
+Generates all 10 presentation figures. Each function:
+\begin{itemize}
+    \item Takes processed data (records, aggregated dataset, or QUBO model).
+    \item Creates a Matplotlib figure.
+    \item Saves to PNG at 220 DPI.
+\end{itemize}
+
+Also provides \texttt{write\_csv} and \texttt{write\_json} helpers for result export, and \texttt{export\_qubo\_artifacts} for saving the $Q$, $J$ matrices and model metadata.
+
+\subsubsection{\texttt{run\_demo.py} --- Pipeline Orchestrator}
+
+The main function:
+\begin{enumerate}
+    \item Parses CLI arguments.
+    \item Loads data (workbook or synthetic).
+    \item Aggregates to sectors.
+    \item For each (hyperparameter set, model version):
+    \begin{enumerate}
+        \item Builds the QUBO model.
+        \item Validates the penalty (ensure feasible optimum).
+        \item Exports QUBO artifacts.
+        \item Runs classical baselines.
+        \item Runs quantum experiments.
+        \item Collects all results.
+    \end{enumerate}
+    \item Writes all CSVs and JSONs.
+    \item Generates all 10 figures.
+\end{enumerate}
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Key Design Decisions and Why}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Why 8 Qubits?}
+
+The Hartford workbook naturally groups 50 assets into 8 sectors. Rather than
+artificially expanding or reducing the qubit count, we matched it to the
+problem's natural structure. This means every qubit has a clear business
+meaning: ``include this sector or not.''
+
+\subsection{Why $B = 4$?}
+
+Selecting half of 8 sectors gives $\binom{8}{4} = 70$ feasible portfolios---a
+non-trivial search space. $B = 1$ or $B = 7$ would make the problem trivially
+easy. $B = 4$ also mirrors common portfolio diversification practice.
+
+\subsection{Why Equal Weights?}
+
+Allowing continuous weights within selected sectors would turn the problem into
+a mixed-integer program: discrete sector selection plus continuous weight
+optimization. The continuous part would need to be handled separately from the
+quantum optimization. Equal weighting keeps the problem purely binary, which
+is exactly what QUBO/QAOA is designed for.
+
+\subsection{Why Not Use SciPy for QAOA Optimization?}
+
+We deliberately avoided SciPy to minimize dependencies and ensure the project
+runs in any Python environment with just NumPy. The coordinate descent
+optimizer is simple but sufficient for demonstrating the QAOA workflow. At
+8 qubits, the improvement from a better optimizer would change $P(\text{optimal})$
+by perhaps $0.1$--$0.5$ percentage points---not enough to change the conclusion
+that QAOA is approximately uniform over feasible states.
+
+\subsection{Why Four Model Variants?}
+
+Running base, capital, liquidity, and both variants serves multiple purposes:
+\begin{itemize}
+    \item Shows that the QUBO formulation is flexible and can incorporate domain-specific constraints.
+    \item Demonstrates to Hartford stakeholders how different regulatory priorities change the optimal portfolio.
+    \item Validates that the quantum pipeline handles all four variants identically (same code path, same correctness).
+\end{itemize}
+
+\subsection{Why Include Brute-Force?}
+
+At $n = 8$, brute-force is instant. Including it gives us an unambiguous ground
+truth for every experiment. This is honest and makes all quantum claims
+verifiable. It also lets us compute the exact energy landscape, which explains
+\textit{why} QAOA performs the way it does.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{What We Tried That Did Not Work}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{H/CZ Decomposition for ZZ Gates}
+
+Our initial Cirq circuit used the decomposition:
+\[
+e^{-i\theta Z_i Z_j} \stackrel{?}{=} H_j \cdot CZ(i,j) \cdot R_Z(2\theta)_j \cdot CZ(i,j) \cdot H_j
+\]
+
+This is \textbf{incorrect}. The $H$--$CZ$ sequence changes the basis to compute
+$XX$ interactions, not $ZZ$. We discovered this when the Cirq circuit
+probabilities did not match the NumPy simulator. The fix was switching to the
+standard CNOT/RZ/CNOT decomposition (Equation~\ref{eq:zz_decomp}).
+
+\textbf{Lesson:} Always validate quantum circuits against a known-correct
+reference implementation. Our NumPy simulator served this role.
+
+\subsection{Sharper QAOA Concentration}
+
+We hoped that increasing QAOA depth from $p = 1$ to $p = 3$ would concentrate
+probability mass on the optimum. It did not make a meaningful difference.
+
+The reason is visible in the energy landscape: the gap between the best and
+second-best feasible solutions is $\sim 0.000031$ in scaled units. For QAOA to
+distinguish solutions this close in energy, it would need either much deeper
+circuits (large $p$) or a fundamentally different approach like warm-starting.
+
+\subsection{Pruned Connectivity}
+
+We tried keeping only the top-12 strongest Ising couplings to reduce gate count.
+While this reduced circuit depth, it also degraded solution quality by about
+$50\%$ (from $\sim 0.009$ to $\sim 0.004$ optimal probability). Even weak
+couplings carry information.
+
+\textbf{Lesson:} Pruning is useful for depth reduction but must be balanced
+against information loss. A smarter approach might prune edges below a threshold
+based on the energy gap they contribute to.
+
+\subsection{Running on Python 3.9}
+
+The code uses \texttt{@dataclass(slots=True)}, which requires Python 3.10+.
+We discovered this when trying to run on a machine with only Python 3.9. The
+\texttt{slots=True} parameter was used for memory efficiency but is not
+essential. It could be removed for broader compatibility.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Figures: What Each One Shows and Why}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Portfolio Tradeoff Frontier}
+\texttt{portfolio\_tradeoff\_frontier.png}
+
+Scatter plot of the four exact optimal portfolios in (volatility, expected return)
+space. Point size encodes liquidity; color encodes capital charge.
+
+\textbf{Purpose:} Shows judges immediately how the insurance constraints change
+the optimal portfolio. Base model chases return (upper right); capital model
+retreats to safety (lower left).
+
+\subsection{Scenario Return Distributions}
+\texttt{scenario\_return\_distributions.png}
+
+Kernel density estimates of the 1{,}200-scenario return distributions for each
+optimal portfolio. CVaR95 values are shown in the legend.
+
+\textbf{Purpose:} Demonstrates that we actually use the scenario data, not just
+summary statistics. Makes tail risk visible.
+
+\subsection{Energy Landscape}
+\texttt{energy\_landscape\_base.png}
+
+All 256 bitstrings ranked by QUBO objective. Feasible states are highlighted.
+The gap annotation shows why QAOA struggles.
+
+\textbf{Purpose:} The single most important explanatory figure. Answers ``why
+doesn't QAOA find the optimum with high probability?'' before the question is
+asked.
+
+\subsection{QAOA Parameter Landscape}
+\texttt{qaoa\_parameter\_landscape\_base\_p1.png}
+
+Heatmap of expected Ising energy as a function of $(\gamma, \beta)$ for $p = 1$.
+The optimized point is marked.
+
+\textbf{Purpose:} Shows that the QAOA landscape has structure (basins and ridges)
+and that the optimizer finds a reasonable minimum.
+
+\subsection{QAOA Convergence}
+\texttt{qaoa\_convergence\_base.png}
+
+Optimizer trace (expected energy vs.\ step) for $p = 1, 2, 3$.
+
+\textbf{Purpose:} Shows the optimization process. The random restart phase
+(high variance) followed by coordinate descent refinement (convergence) is
+clearly visible.
+
+\subsection{Classical vs Quantum Summary Table}
+\texttt{classical\_vs\_quantum.png}
+
+Comparison table showing exact bitstrings, greedy match, continuous gap,
+quantum bitstrings, match status, and probabilities for all four models.
+
+\textbf{Purpose:} The definitive comparison. All four quantum results match
+exact, but the probabilities are $\sim 1\%$.
+
+\subsection{Quantum Probability Summary}
+\texttt{quantum\_probability\_summary.png}
+
+Left panel: absolute $P(\text{optimal})$ and $P(\text{feasible})$.
+Right panel: $P(\text{optimal} \mid \text{feasible})$ compared to uniform $1/70$.
+
+\textbf{Purpose:} Makes the honest limitation explicit. The conditional
+probability is indistinguishable from uniform.
+
+\subsection{Atom Layout}
+\texttt{atom\_layout.png}
+
+2D MDS embedding of sectors based on correlation distance. Edge thickness
+encodes correlation strength.
+
+\textbf{Purpose:} Neutral-atom tie-in. Shows how sector correlations could
+inform physical atom placement on hardware.
+
+\subsection{Connectivity Tradeoff}
+\texttt{connectivity\_tradeoff.png}
+
+Scatter plot of average circuit depth vs.\ average $P(\text{optimal})$ for the
+four connectivity modes.
+
+\textbf{Purpose:} Shows that smart scheduling (hand/auto) achieves the same
+quality at much lower depth. Pruning trades quality for depth.
+
+\subsection{Success vs Noise}
+\texttt{success\_vs\_noise.png}
+
+$P(\text{optimal})$ as a function of noise strength for each noise model.
+Noiseless baseline shown as dashed line.
+
+\textbf{Purpose:} Quantifies noise sensitivity. Essential for the hardware
+analysis portion of the presentation.
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Glossary of Key Terms}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{description}[leftmargin=3cm, style=nextline]
+    \item[QUBO] Quadratic Unconstrained Binary Optimization. An optimization
+    problem over binary variables with a quadratic objective function.
+
+    \item[Ising Model] A physical model of interacting spins. Equivalent to QUBO
+    up to a linear change of variables.
+
+    \item[QAOA] Quantum Approximate Optimization Algorithm. A variational quantum
+    algorithm for combinatorial optimization.
+
+    \item[Hamiltonian] In quantum mechanics, the operator whose eigenvalues are
+    the system's energy levels. The cost Hamiltonian $H_C$ encodes our
+    optimization objective.
+
+    \item[Statevector] The full quantum state of the system. For $n$ qubits,
+    a complex vector of dimension $2^n$.
+
+    \item[Pauli-$Z$] The diagonal Pauli matrix $Z = \text{diag}(1, -1)$. Its
+    eigenvalues $\pm 1$ correspond to the computational basis states $|0\rangle$
+    and $|1\rangle$.
+
+    \item[Pauli-$X$] The bit-flip matrix $X = \bigl(\begin{smallmatrix} 0 & 1 \\ 1 & 0 \end{smallmatrix}\bigr)$. The QAOA mixer Hamiltonian is a sum of $X$ operators.
+
+    \item[$R_X(\theta)$] Rotation around the $X$-axis by angle $\theta$:
+    $e^{-i\theta X/2}$.
+
+    \item[$R_Z(\theta)$] Rotation around the $Z$-axis by angle $\theta$:
+    $e^{-i\theta Z/2}$.
+
+    \item[CNOT] Controlled-NOT gate. Flips the target qubit if the control qubit
+    is $|1\rangle$.
+
+    \item[Circuit Depth] The number of sequential time steps in a quantum circuit.
+    Gates in the same time step are executed in parallel.
+
+    \item[Chromatic Index] The minimum number of colors needed to edge-color a
+    graph such that no two adjacent edges share a color.
+
+    \item[VaR] Value at Risk. A quantile-based risk measure.
+
+    \item[CVaR] Conditional Value at Risk (Expected Shortfall). The expected loss
+    in the tail beyond VaR.
+
+    \item[Markowitz] Harry Markowitz's mean--variance portfolio theory (1952).
+
+    \item[Bloqade] QuEra's software framework for programming neutral-atom quantum
+    computers.
+
+    \item[Cirq] Google's Python framework for writing and simulating quantum
+    circuits.
+\end{description}
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Anticipated Judge Questions}
+% ══════════════════════════════════════════════════════════════════════════════
+
+\begin{enumerate}
+    \item \textbf{``Is there a quantum advantage here?''}
+
+    No, and we are explicit about this. At 8 qubits, brute-force enumeration
+    solves the problem exactly in microseconds. The value of this project is in
+    the end-to-end pipeline, the hardware analysis, and the demonstration that
+    the workflow scales to larger instances where classical methods fail.
+
+    \item \textbf{``Why is QAOA basically uniform over feasible states?''}
+
+    The energy gap between the best and second-best feasible solution is
+    $\sim 3 \times 10^{-5}$ in scaled units. QAOA at shallow depth cannot
+    resolve energy differences this small. The energy landscape figure
+    (Section~10.3) shows this clearly.
+
+    \item \textbf{``What would it take for quantum advantage?''}
+
+    Scaling to 16--32 qubits (individual assets instead of sectors, or finer
+    sector granularity) would make brute-force infeasible ($2^{16} = 65{,}536$
+    to $2^{32} \approx 4 \times 10^9$ states). At that scale, QAOA or quantum
+    annealing could become competitive, especially if the energy gaps are larger
+    in the unsimplified problem.
+
+    \item \textbf{``How realistic is your noise model?''}
+
+    Our approximate noise model (uniform mixing) is a placeholder. It captures
+    the qualitative behavior (more noise $\to$ worse performance) but is not
+    calibrated to real hardware. When Bloqade is installed, the code upgrades
+    to hardware-calibrated noise transforms automatically.
+
+    \item \textbf{``Why not use a more sophisticated optimizer?''}
+
+    Coordinate descent was chosen for simplicity and zero external dependencies.
+    A better optimizer (COBYLA, Nelder--Mead) would find marginally better angles
+    but would not change the conclusion: the problem's energy landscape is too
+    flat for shallow QAOA to exploit.
+
+    \item \textbf{``What does the neutral-atom layout actually tell you?''}
+
+    The MDS layout places correlated sectors nearby. On a real neutral-atom
+    device, atoms that need strong ZZ interactions should be physically close
+    (interaction strength decays with distance). Our layout provides a starting
+    point for mapping the problem onto hardware.
+
+    \item \textbf{``Why did you choose equal weighting instead of optimizing weights?''}
+
+    Equal weighting keeps the problem purely binary (QUBO-native). Continuous
+    weight optimization would require a different quantum formulation, such as
+    CVQE or a hybrid approach with classical inner-loop optimization.
+
+    \item \textbf{``Can this handle more than 8 sectors?''}
+
+    Yes. The QUBO construction, Ising conversion, and QAOA simulation are all
+    parameterized by $n$. The only 8-specific piece is the brute-force baseline,
+    which would need to be replaced by sampling-based evaluation at $n > 20$.
+\end{enumerate}
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+\section{Mathematical Reference Card}
+% ══════════════════════════════════════════════════════════════════════════════
+
+For quick reference during the presentation:
+
+\begin{align}
+\text{QUBO objective:} \quad & f(\mathbf{x}) = \mathbf{x}^\top Q\, \mathbf{x} \\[8pt]
+\text{Full insurer objective:} \quad & f(\mathbf{x}) = \frac{q}{B^2}\, \mathbf{x}^\top \bm{\Sigma}\, \mathbf{x}
+    - \frac{1}{B}\, \bm{\mu}^\top \mathbf{x}
+    + \lambda (\mathbf{1}^\top \mathbf{x} - B)^2
+    + \frac{\gamma}{B}\, \tilde{\mathbf{c}}^\top \mathbf{x}
+    + \frac{\eta}{B}\, \tilde{\bm{\imath}}^\top \mathbf{x} \\[8pt]
+\text{QUBO diagonal:} \quad & Q_{ii} = \frac{q}{B^2}\Sigma_{ii} - \frac{\mu_i}{B} + \lambda(1-2B) + \frac{\gamma}{B}\tilde{c}_i + \frac{\eta}{B}\tilde{\imath}_i \\[8pt]
+\text{QUBO off-diag:} \quad & Q_{ij} = \frac{2q}{B^2}\Sigma_{ij} + 2\lambda \quad (i < j) \\[8pt]
+\text{Bit to spin:} \quad & x_i = \frac{1 - s_i}{2} \\[8pt]
+\text{Ising Hamiltonian:} \quad & H_C = \sum_i h_i Z_i + \sum_{i<j} J_{ij} Z_i Z_j \\[8pt]
+\text{QAOA state:} \quad & |\bm{\gamma},\bm{\beta}\rangle = \prod_{k=1}^p e^{-i\beta_k H_M} e^{-i\gamma_k H_C} |+\rangle^{\otimes n} \\[8pt]
+\text{ZZ gate:} \quad & e^{-i\theta Z_i Z_j} = \text{CNOT}(i,j) \cdot R_Z(2\theta)_j \cdot \text{CNOT}(i,j) \\[8pt]
+\text{Feasible count:} \quad & \binom{8}{4} = 70 \\[8pt]
+\text{VaR}_\alpha: \quad & \inf\{l : P(\text{Loss} > l) \leq 1 - \alpha\} \\[8pt]
+\text{CVaR}_\alpha: \quad & \mathbb{E}[\text{Loss} \mid \text{Loss} \geq \text{VaR}_\alpha]
+\end{align}
+
+
+\end{document}
