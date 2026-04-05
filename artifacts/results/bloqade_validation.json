@@ -1,0 +1,114 @@
+{
+  "python_version": "3.12.13 (main, Mar 25 2026, 03:16:06) [Clang 22.1.1 ]",
+  "numpy_version": "2.2.6",
+  "base_exact_optimum": "00011110",
+  "base_p1_probability_best": 0.008491462515897875,
+  "base_p2_probability_best": 0.008252091948707088,
+  "base_p3_probability_best": 0.008237375703069039,
+  "base_ideal_summary": {
+    "feasible_probability_mass": 0.5944003115162402,
+    "optimal_bitstring_probability": 0.008491462025706227,
+    "expected_scaled_objective": -2.220219487124707,
+    "best_feasible_scaled_objective_in_distribution": -2.2857157013726352,
+    "var_alpha": 0.95
+  },
+  "base_noisy_one_zone_summary": {
+    "feasible_probability_mass": 0.4763676017326354,
+    "optimal_bitstring_probability": 0.006972453532957869,
+    "expected_scaled_objective": -2.175812216053449,
+    "best_feasible_scaled_objective_in_distribution": -2.2857157013726352,
+    "var_alpha": 0.95
+  },
+  "model_results": [
+    {
+      "model_version": "base",
+      "schedule": "hand",
+      "exact_optimum": "00011110",
+      "best_sampled_feasible": "00011110",
+      "matches_exact_optimum": true,
+      "optimal_bitstring_probability": 0.008237374196323139,
+      "feasible_probability_mass": 0.5766143990845879,
+      "circuit_depth": 85,
+      "one_zone_fidelity": 0.14857318997383118
+    },
+    {
+      "model_version": "capital",
+      "schedule": "hand",
+      "exact_optimum": "11110000",
+      "best_sampled_feasible": "11110000",
+      "matches_exact_optimum": true,
+      "optimal_bitstring_probability": 0.008250088044594487,
+      "feasible_probability_mass": 0.5766137655940864,
+      "circuit_depth": 85,
+      "one_zone_fidelity": 0.14857333898544312
+    },
+    {
+      "model_version": "liquidity",
+      "schedule": "hand",
+      "exact_optimum": "11001100",
+      "best_sampled_feasible": "11001100",
+      "matches_exact_optimum": true,
+      "optimal_bitstring_probability": 0.008248140210998295,
+      "feasible_probability_mass": 0.5766140138165712,
+      "circuit_depth": 85,
+      "one_zone_fidelity": 0.14857327938079834
+    },
+    {
+      "model_version": "both",
+      "schedule": "hand",
+      "exact_optimum": "11110000",
+      "best_sampled_feasible": "11110000",
+      "matches_exact_optimum": true,
+      "optimal_bitstring_probability": 0.008254178604012487,
+      "feasible_probability_mass": 0.5766151082131827,
+      "circuit_depth": 85,
+      "one_zone_fidelity": 0.1485711932182312
+    }
+  ],
+  "comparison_to_previous_saved_results": [
+    {
+      "model_version": "base",
+      "bloqade_schedule": "hand",
+      "bloqade_optimal_bitstring_probability": 0.008237374196323139,
+      "bloqade_feasible_probability_mass": 0.5766143990845879,
+      "bloqade_best_sampled_feasible": "00011110",
+      "previous_schedule": "auto",
+      "previous_optimal_bitstring_probability": 0.0102795501900798,
+      "previous_feasible_probability_mass": 0.7195656988485205,
+      "previous_best_feasible_sampled_bitstring": "00011110"
+    },
+    {
+      "model_version": "capital",
+      "bloqade_schedule": "hand",
+      "bloqade_optimal_bitstring_probability": 0.008250088044594487,
+      "bloqade_feasible_probability_mass": 0.5766137655940864,
+      "bloqade_best_sampled_feasible": "11110000",
+      "previous_schedule": "naive",
+      "previous_optimal_bitstring_probability": 0.0102979389760081,
+      "previous_feasible_probability_mass": 0.7195637958081738,
+      "previous_best_feasible_sampled_bitstring": "11110000"
+    },
+    {
+      "model_version": "liquidity",
+      "bloqade_schedule": "hand",
+      "bloqade_optimal_bitstring_probability": 0.008248140210998295,
+      "bloqade_feasible_probability_mass": 0.5766140138165712,
+      "bloqade_best_sampled_feasible": "11001100",
+      "previous_schedule": "auto",
+      "previous_optimal_bitstring_probability": 0.0102951328510901,
+      "previous_feasible_probability_mass": 0.7195641024399501,
+      "previous_best_feasible_sampled_bitstring": "11001100"
+    },
+    {
+      "model_version": "both",
+      "bloqade_schedule": "hand",
+      "bloqade_optimal_bitstring_probability": 0.008254178604012487,
+      "bloqade_feasible_probability_mass": 0.5766151082131827,
+      "bloqade_best_sampled_feasible": "11110000",
+      "previous_schedule": "auto",
+      "previous_optimal_bitstring_probability": 0.0103038201073477,
+      "previous_feasible_probability_mass": 0.7195619019997107,
+      "previous_best_feasible_sampled_bitstring": "11110000"
+    }
+  ]
+}

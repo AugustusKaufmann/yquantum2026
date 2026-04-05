@@ -2,7 +2,7 @@
 
 An 8-qubit, insurer-aware portfolio optimization workflow for the Capgemini x The Hartford YQuantum challenge.
 
-This repo takes the Hartford workbook, aggregates the 50 assets into 8 sectors, builds a QUBO and Ising model, solves the reduced problem exactly, and runs QAOA-style experiments with connectivity and noise analysis. The code is organized so the repo is both runnable in PyCharm and presentation-ready for the hackathon.
+This repo takes the Hartford workbook, aggregates the 50 assets into 8 sectors, builds a QUBO and Ising model, solves the reduced problem exactly, and runs QAOA-style experiments with connectivity and noise analysis. The primary execution path is now the Bloqade-backed workflow in `run_bloqade_demo.py`, with the older Cirq-first pipeline retained only as legacy reference code.
 
 ## What This Repo Does
 
@@ -92,15 +92,15 @@ Business takeaway:
 
 Quantum takeaway:
 
-- The best sampled feasible quantum bitstring matches the exact classical optimum in all four model versions.
-- The optimum probability in the strongest noiseless runs is only about `1.03%`.
-- Feasible probability mass is about `71.96%`.
-- Conditioned on feasibility, the optimum probability is about `1.43%`, which is essentially uniform over the 70 feasible 4-of-8 portfolios.
+- In the validated Bloqade run, the best sampled feasible quantum bitstring matches the exact classical optimum in all four model versions.
+- The Bloqade-backed optimum probability is about `0.82%` to `0.85%` in the best `p=3` runs.
+- Feasible probability mass is about `57.66%`.
+- Conditioned on feasibility, the optimum probability is still essentially uniform over the 70 feasible 4-of-8 portfolios.
 
 So the honest conclusion is:
 
 - the workflow is technically correct,
-- the hardware/connectivity/noise analysis is meaningful,
+- the Bloqade hardware/connectivity/noise analysis is meaningful,
 - but this reduced 8-sector instance is not a quantum advantage result.
 
 ## Repo Layout
@@ -115,19 +115,34 @@ So the honest conclusion is:
 │   ├── presentation_guide.md
 │   └── technical_notes.md
 ├── bloqade_experiments.py
+├── bloqade_qaoa_portfolio.py
 ├── classical_baselines.py
 ├── make_figures.py
 ├── portfolio_model.py
 ├── project_config.py
 ├── qaoa_simulator.py
 ├── results_metrics.py
+├── run_bloqade_demo.py
 ├── run_demo.py
 └── investment_dataset_full.xlsx
 ```
 
 ## How To Run
 
-Recommended Python version: `3.11` or `3.12`
+Validated Python version: `3.12.x`
+
+`bloqade` did not import cleanly under Python `3.14` during validation, so the repo now pins the Bloqade path to Python `3.12` via `.python-version`.
+
+If your machine only has a newer Python installed, `uv` is the fastest way to bootstrap the validated interpreter:
+
+```bash
+pip install uv
+uv python install 3.12
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+pip install -r requirements-quantum.txt
+python run_bloqade_demo.py
+```
 
 Install the base dependencies:
 
@@ -143,13 +158,15 @@ Optional quantum/circuit extras:
 pip install -r requirements-quantum.txt
 ```
 
-Run the full real-workbook pipeline:
+Recommended Bloqade workflow:
 
 ```bash
-python run_demo.py --workbook /absolute/path/to/investment_dataset_full.xlsx
+python run_bloqade_demo.py
 ```
 
-If the workbook is the copy stored in this repo:
+The checked-in workbook path is already baked into the Bloqade demo, so no extra argument is required.
+
+Legacy non-Bloqade pipeline:
 
 ```bash
 python run_demo.py --workbook ./investment_dataset_full.xlsx
@@ -165,6 +182,7 @@ Results:
 - `artifacts/results/comparison_table.csv`
 - `artifacts/results/exact_enumeration_results.csv`
 - `artifacts/results/optimizer_trace.csv`
+- `artifacts/results/bloqade_validation.json`
 
 Presentation figures:
 
@@ -178,6 +196,10 @@ Presentation figures:
 - `artifacts/figures/success_vs_noise.png`
 - `artifacts/figures/classical_vs_quantum.png`
 - `artifacts/figures/quantum_probability_summary.png`
+- `artifacts/figures/bloqade_depth_comparison.png`
+- `artifacts/figures/bloqade_fidelity_comparison.png`
+- `artifacts/figures/bloqade_edge_coloring.png`
+- `artifacts/figures/bloqade_fidelity_vs_depth.png`
 
 See `docs/presentation_guide.md` for the recommended slide order.
 
@@ -185,14 +207,15 @@ See `docs/presentation_guide.md` for the recommended slide order.
 
 If you only want the shortest path through the code:
 
-1. `run_demo.py`
-2. `portfolio_model.py`
-3. `classical_baselines.py`
-4. `bloqade_experiments.py`
-5. `make_figures.py`
+1. `run_bloqade_demo.py`
+2. `bloqade_qaoa_portfolio.py`
+3. `portfolio_model.py`
+4. `classical_baselines.py`
+5. `results_metrics.py`
 
 ## Notes
 
-- The code runs without Bloqade installed by using a local NumPy QAOA simulator and optional Cirq-backed paths when available.
+- `run_bloqade_demo.py` is the command to use for the hackathon-required Bloqade path.
+- `run_demo.py` and `bloqade_experiments.py` remain in the repo as the older Cirq-first pipeline for comparison/reference.
 - The repo was cleaned so the tracked figure folder contains only the presentation-quality images, not every exploratory chart from earlier runs.
 - The project is set up to be uploaded directly to GitHub as-is.

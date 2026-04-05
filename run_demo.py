@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 """
-Single entrypoint for the full research pipeline.
+Legacy Cirq-first entrypoint for the full research pipeline.
+
+For the hackathon-required Bloqade execution path, use:
+    python run_bloqade_demo.py
 
 Typical usage in PyCharm:
     python run_demo.py

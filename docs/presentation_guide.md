@@ -68,12 +68,15 @@ Use:
 - `artifacts/figures/atom_layout.png`
 - `artifacts/figures/connectivity_tradeoff.png`
 - `artifacts/figures/success_vs_noise.png`
+- `artifacts/figures/bloqade_depth_comparison.png`
+- `artifacts/figures/bloqade_fidelity_comparison.png`
 
 Why:
 
 - `atom_layout.png` gives the neutral-atom-specific story.
 - `connectivity_tradeoff.png` shows that scheduling matters because it reduces depth without hurting quality much.
 - `success_vs_noise.png` shows how performance degrades under more realistic noise assumptions.
+- `bloqade_depth_comparison.png` and `bloqade_fidelity_comparison.png` are the direct Bloqade-backed validation slides.
 
 ## Recommended Short Slide Sequence
 

@@ -20,8 +20,12 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import networkx as nx
+import json
+import sys
 
 import cirq
 from bloqade import squin, cirq_utils
@@ -50,6 +54,13 @@ print("All imports successful.")
 
 # Load the real Hartford workbook (fall back to synthetic if not available)
 from pathlib import Path
+
+ARTIFACTS_DIR = Path("artifacts")
+FIGURES_DIR = ARTIFACTS_DIR / "figures"
+RESULTS_DIR = ARTIFACTS_DIR / "results"
+
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 workbook_path = Path("investment_dataset_full.xlsx")
 if workbook_path.exists():
@@ -273,65 +284,49 @@ def build_portfolio_qaoa_hand_tuned(
         else:
             h_qubit_map[key] = v
 
-    # Flatten for squin kernel
-    h_list = [float(x) for x in h]
-    gamma_list = [float(g) for g in gammas]
-    beta_list = [float(b) for b in betas]
-
-    # Precompute group data as flat lists for squin
-    group_data = []
-    for group in color_groups:
-        group_edges = []
-        for edge in group:
-            u, v = edge
-            key = (min(u, v), max(u, v))
-            w = edge_weights.get(key, 0.0)
-            hq = h_qubit_map[key]
-            group_edges.append((u, v, w, hq))
-        group_data.append(group_edges)
-
-    @squin.kernel
-    def qaoa_parallel_kernel():
-        q = squin.qalloc(n)
-
-        # Initial state: |+>^n
-        for i in range(n):
-            squin.h(q[i])
-
-        for layer in range(p):
-            gamma = gamma_list[layer]
-            beta = beta_list[layer]
-
-            # Cost layer: single-qubit fields
-            for i in range(n):
-                squin.rz(2.0 * gamma * h_list[i], q[i])
-
-            # Cost layer: parallel ZZ groups
-            for group in group_data:
-                # Hadamard layer
-                for u, v, w, hq in group:
-                    squin.h(q[hq])
-                # First CZ layer
-                for u, v, w, hq in group:
-                    squin.cz(q[u], q[v])
-                # Rotation layer
-                for u, v, w, hq in group:
-                    squin.rx(2.0 * gamma * w, q[hq])
-                # Second CZ layer
-                for u, v, w, hq in group:
-                    squin.cz(q[u], q[v])
-                # Second Hadamard layer
-                for u, v, w, hq in group:
-                    squin.h(q[hq])
-
-            # Mixer layer
-            for i in range(n):
-                squin.rx(2.0 * beta, q[i])
-
     qubits = cirq.LineQubit.range(n)
-    circuit = cirq_utils.emit_circuit(qaoa_parallel_kernel, circuit_qubits=qubits)
+    circuit = cirq.Circuit()
 
-    # Optimize: merge redundant single-qubit gates and convert to native CZ gateset
+    # Initial state: |+>^n
+    circuit.append(cirq.Moment(cirq.H(qubits[i]) for i in range(n)))
+
+    for layer in range(p):
+        gamma = float(gammas[layer])
+        beta = float(betas[layer])
+
+        # Single-qubit cost terms can all execute together.
+        circuit.append(
+            cirq.Moment(
+                cirq.rz(2.0 * gamma * float(h[i]))(qubits[i])
+                for i in range(n)
+            )
+        )
+
+        # Manually schedule each edge-colored group as parallel moments.
+        for group in color_groups:
+            hadamard_ops = []
+            cz_ops = []
+            rx_ops = []
+
+            for edge in group:
+                u, v = edge
+                key = (min(u, v), max(u, v))
+                w = edge_weights.get(key, 0.0)
+                hq = h_qubit_map[key]
+
+                hadamard_ops.append(cirq.H(qubits[hq]))
+                cz_ops.append(cirq.CZ(qubits[u], qubits[v]))
+                rx_ops.append(cirq.rx(2.0 * gamma * w)(qubits[hq]))
+
+            circuit.append(cirq.Moment(hadamard_ops))
+            circuit.append(cirq.Moment(cz_ops))
+            circuit.append(cirq.Moment(rx_ops))
+            circuit.append(cirq.Moment(cz_ops))
+            circuit.append(cirq.Moment(hadamard_ops))
+
+        # Mixer layer
+        circuit.append(cirq.Moment(cirq.rx(2.0 * beta)(qubits[i]) for i in range(n)))
+
     circuit = cirq.merge_single_qubit_moments_to_phxz(circuit)
     circuit = cirq.optimize_for_target_gateset(circuit, gateset=cirq.CZTargetGateset())
     return circuit
@@ -387,7 +382,7 @@ ax.set_xticklabels([f"p={p}" for p in depth_data["p"]])
 ax.legend()
 ax.grid(axis="y", alpha=0.3)
 plt.tight_layout()
-plt.savefig("artifacts/figures/bloqade_depth_comparison.png", dpi=220)
+plt.savefig(FIGURES_DIR / "bloqade_depth_comparison.png", dpi=220)
 plt.show()
 
 # ## 8. Noise Analysis with Gemini Noise Models
@@ -440,6 +435,26 @@ def get_probabilities(circuit, sim, noisy=False):
             be_idx = (be_idx << 1) | ((le_idx >> bit) & 1)
         reordered[le_idx] = probs[be_idx]
     return reordered / np.sum(reordered)
+
+
+def summarize_bloqade_distribution(label, probs, optimum_bitstring):
+    """Compute the same summary metrics we use elsewhere in the repo."""
+    summary = summarize_probability_distribution(
+        aggregated,
+        qubo,
+        probs,
+        optimum_bitstring=optimum_bitstring,
+    )
+    conditional_optimum = (
+        summary["optimal_bitstring_probability"]
+        / max(summary["feasible_probability_mass"], 1e-12)
+    )
+    print(f"\n--- {label} ---")
+    print(f"  P(optimal):              {summary['optimal_bitstring_probability']:.4f}")
+    print(f"  P(feasible):             {summary['feasible_probability_mass']:.4f}")
+    print(f"  P(optimal | feasible):   {conditional_optimum:.4f}")
+    print(f"  Uniform baseline (1/70): {1/70:.4f}")
+    return summary
 
 
 # Compare fidelity across circuit variants and noise models
@@ -502,7 +517,7 @@ for bar, v in zip(bars, depths):
              ha="center", fontsize=10, fontweight="bold")
 
 plt.tight_layout()
-plt.savefig("artifacts/figures/bloqade_fidelity_comparison.png", dpi=220)
+plt.savefig(FIGURES_DIR / "bloqade_fidelity_comparison.png", dpi=220)
 plt.show()
 
 # ## 9. Sample Portfolios from Noisy Circuits
@@ -520,18 +535,8 @@ probs_ideal = get_probabilities(best_circuit, simulator)
 noisy_circuit_one = utils.noise.transform_circuit(best_circuit, model=noise_one_zone)
 probs_noisy = get_probabilities(noisy_circuit_one, simulator, noisy=True)
 
-# Summarize for both
-for label, probs in [("Ideal", probs_ideal), ("Noisy (One Zone)", probs_noisy)]:
-    summary = summarize_probability_distribution(
-        aggregated, qubo, probs,
-        optimum_bitstring=optimum_bitstring,
-    )
-    print(f"\n--- {label} ---")
-    print(f"  P(optimal):              {summary['optimal_bitstring_probability']:.4f}")
-    print(f"  P(feasible):             {summary['feasible_probability_mass']:.4f}")
-    cond = summary['optimal_bitstring_probability'] / max(summary['feasible_probability_mass'], 1e-12)
-    print(f"  P(optimal | feasible):   {cond:.4f}")
-    print(f"  Uniform baseline (1/70): {1/70:.4f}")
+ideal_summary = summarize_bloqade_distribution("Ideal", probs_ideal, optimum_bitstring)
+noisy_summary = summarize_bloqade_distribution("Noisy (One Zone)", probs_noisy, optimum_bitstring)
 
 # Sample bitstrings and find the best feasible portfolio
 shots = 2048
@@ -572,31 +577,69 @@ for label, probs in [("Ideal", probs_ideal), ("Noisy (One Zone)", probs_noisy)]:
 # Run the full QAOA pipeline for all four insurance model variants
 # (base, capital, liquidity, both) and verify quantum matches classical.
 
-print(f"{'Model':<12} {'Exact Opt.':<12} {'Quantum Best':<14} {'Match':<8} {'Fidelity':<10}")
-print("-" * 56)
+print(f"{'Model':<12} {'Schedule':<12} {'Exact Opt.':<12} {'Quantum Best':<14} {'Match':<8} {'P(opt)':<8}")
+print("-" * 76)
+
+model_results = []
 
 for version in ["base", "capital", "liquidity", "both"]:
     q_model = models[version]
     opt_bs = exact_optima[version]["bitstring"]
 
-    # Optimize QAOA angles for this model
+    # Use p=3 here to stay aligned with the earlier project results, where the
+    # best quantum runs came from the deeper circuit.
     qaoa_res = optimize_qaoa_angles(
-        q_model.h, q_model.J, depth=1,
+        q_model.h, q_model.J, depth=3,
         seed=7, restarts=12,
     )
 
-    # Build hand-tuned circuit
-    circ = build_portfolio_qaoa_hand_tuned(
-        q_model.h, q_model.J,
-        qaoa_res.gammas, qaoa_res.betas,
+    candidate_circuits = {}
+    naive_circ = build_portfolio_qaoa_naive(
+        q_model.h,
+        q_model.J,
+        qaoa_res.gammas,
+        qaoa_res.betas,
+    )
+    candidate_circuits["naive"] = naive_circ
+    candidate_circuits["auto"] = utils.remove_tags(utils.parallelize(circuit=naive_circ))
+    candidate_circuits["hand"] = build_portfolio_qaoa_hand_tuned(
+        q_model.h,
+        q_model.J,
+        qaoa_res.gammas,
+        qaoa_res.betas,
     )
 
-    # Compute fidelity under noise
-    fid = compute_fidelity(circ, noise_one_zone, simulator)
+    best_schedule = None
+    best_schedule_summary = None
+    best_schedule_probs = None
+    best_schedule_circuit = None
 
-    # Get ideal probabilities and sample
-    probs = get_probabilities(circ, simulator)
-    counts = sample_counts_from_probabilities(probs, shots=2048, seed=42)
+    for schedule_name, circ in candidate_circuits.items():
+        probs = get_probabilities(circ, simulator)
+        summary = summarize_probability_distribution(
+            aggregated,
+            q_model,
+            probs,
+            optimum_bitstring=opt_bs,
+        )
+        if (
+            best_schedule_summary is None
+            or summary["optimal_bitstring_probability"] > best_schedule_summary["optimal_bitstring_probability"]
+            or (
+                np.isclose(
+                    summary["optimal_bitstring_probability"],
+                    best_schedule_summary["optimal_bitstring_probability"],
+                )
+                and len(circ) < len(best_schedule_circuit)
+            )
+        ):
+            best_schedule = schedule_name
+            best_schedule_summary = summary
+            best_schedule_probs = probs
+            best_schedule_circuit = circ
+
+    fid = compute_fidelity(best_schedule_circuit, noise_one_zone, simulator)
+    counts = sample_counts_from_probabilities(best_schedule_probs, shots=2048, seed=42)
 
     # Find best feasible
     best_bs = None
@@ -609,7 +652,23 @@ for version in ["base", "capital", "liquidity", "both"]:
             best_bs = bs
 
     match = "YES" if best_bs == opt_bs else "NO"
-    print(f"{version:<12} {opt_bs:<12} {best_bs or 'N/A':<14} {match:<8} {fid:<10.4f}")
+    print(
+        f"{version:<12} {best_schedule:<12} {opt_bs:<12} {best_bs or 'N/A':<14} "
+        f"{match:<8} {best_schedule_summary['optimal_bitstring_probability']:<8.4f}"
+    )
+    model_results.append(
+        {
+            "model_version": version,
+            "schedule": best_schedule,
+            "exact_optimum": opt_bs,
+            "best_sampled_feasible": best_bs,
+            "matches_exact_optimum": match == "YES",
+            "optimal_bitstring_probability": best_schedule_summary["optimal_bitstring_probability"],
+            "feasible_probability_mass": best_schedule_summary["feasible_probability_mass"],
+            "circuit_depth": len(best_schedule_circuit),
+            "one_zone_fidelity": fid,
+        }
+    )
 
 # ## 11. Interaction Graph Visualization
 # 
@@ -666,7 +725,7 @@ ax.set_title(f"Ising Coupling Graph: {len(color_groups)} Parallel Moments "
              f"(from {len(graph.edges)} edges)", fontsize=13)
 ax.axis("off")
 plt.tight_layout()
-plt.savefig("artifacts/figures/bloqade_edge_coloring.png", dpi=220)
+plt.savefig(FIGURES_DIR / "bloqade_edge_coloring.png", dpi=220)
 plt.show()
 
 print(f"Total edges: {len(graph.edges)}")
@@ -709,7 +768,7 @@ ax.set_xticks(p_values)
 ax.legend(fontsize=11)
 ax.grid(alpha=0.3)
 plt.tight_layout()
-plt.savefig("artifacts/figures/bloqade_fidelity_vs_depth.png", dpi=220)
+plt.savefig(FIGURES_DIR / "bloqade_fidelity_vs_depth.png", dpi=220)
 plt.show()
 
 # ## 13. Summary
@@ -722,3 +781,63 @@ plt.show()
 # | Investigate connectivity and noise | Naive/auto/hand-tuned + Gemini noise models |
 # | Demonstrate hardware assumptions affect outcomes | Fidelity degrades with depth; parallelization helps |
 # | Stakeholder-applicable solution | Best quantum portfolio matches classical optimum in all 4 models |
+
+
+previous_results = {}
+previous_quantum_summary = Path("artifacts/results/quantum_summary_results.csv")
+if previous_quantum_summary.exists():
+    import pandas as pd
+
+    old_df = pd.read_csv(previous_quantum_summary)
+    old_none = old_df[
+        (old_df["noise_model"] == "none")
+        & (old_df["p"] == 3)
+    ]
+    for version in ["base", "capital", "liquidity", "both"]:
+        subset = old_none[old_none["model_version"] == version]
+        if len(subset):
+            best = subset.sort_values(
+                ["optimal_bitstring_probability", "feasible_probability_mass", "circuit_depth"],
+                ascending=[False, False, True],
+            ).iloc[0]
+            previous_results[version] = {
+                "schedule": best["connectivity_mode"],
+                "optimal_bitstring_probability": float(best["optimal_bitstring_probability"]),
+                "feasible_probability_mass": float(best["feasible_probability_mass"]),
+                "best_feasible_sampled_bitstring": str(best["best_feasible_sampled_bitstring"]).zfill(len(optimum_bitstring)),
+            }
+
+comparison_records = []
+for record in model_results:
+    previous = previous_results.get(record["model_version"], {})
+    comparison_records.append(
+        {
+            "model_version": record["model_version"],
+            "bloqade_schedule": record["schedule"],
+            "bloqade_optimal_bitstring_probability": record["optimal_bitstring_probability"],
+            "bloqade_feasible_probability_mass": record["feasible_probability_mass"],
+            "bloqade_best_sampled_feasible": record["best_sampled_feasible"],
+            "previous_schedule": previous.get("schedule"),
+            "previous_optimal_bitstring_probability": previous.get("optimal_bitstring_probability"),
+            "previous_feasible_probability_mass": previous.get("feasible_probability_mass"),
+            "previous_best_feasible_sampled_bitstring": previous.get("best_feasible_sampled_bitstring"),
+        }
+    )
+
+summary_payload = {
+    "python_version": sys.version,
+    "numpy_version": np.__version__,
+    "base_exact_optimum": optimum_bitstring,
+    "base_p1_probability_best": float(qaoa_results[1].best_probability),
+    "base_p2_probability_best": float(qaoa_results[2].best_probability),
+    "base_p3_probability_best": float(qaoa_results[3].best_probability),
+    "base_ideal_summary": ideal_summary,
+    "base_noisy_one_zone_summary": noisy_summary,
+    "model_results": model_results,
+    "comparison_to_previous_saved_results": comparison_records,
+}
+
+with open(RESULTS_DIR / "bloqade_validation.json", "w", encoding="utf-8") as handle:
+    json.dump(summary_payload, handle, indent=2)
+
+print(f"\nSaved Bloqade validation summary to {RESULTS_DIR / 'bloqade_validation.json'}")

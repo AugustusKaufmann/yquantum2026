@@ -1,4 +1,4 @@
 -r requirements.txt
-cirq>=1.4
-bloqade
-networkx
+cirq>=1.6,<1.7
+bloqade>=0.32,<0.33
+networkx>=3.6,<4
