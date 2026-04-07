@@ -217,5 +217,3 @@ If you only want the shortest path through the code:
 
 - `run_bloqade_demo.py` is the command to use for the hackathon-required Bloqade path.
 - `run_demo.py` and `bloqade_experiments.py` remain in the repo as the older Cirq-first pipeline for comparison/reference.
-- The repo was cleaned so the tracked figure folder contains only the presentation-quality images, not every exploratory chart from earlier runs.
-- The project is set up to be uploaded directly to GitHub as-is.
